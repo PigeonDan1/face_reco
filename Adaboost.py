@@ -1,57 +1,87 @@
-import cv2
-import os
 import numpy as np
-import matplotlib.pyplot as plt
+import cv2
 from sklearn.metrics import roc_curve, auc
+from sklearn.tree import DecisionTreeClassifier
+import matplotlib.pyplot as plt
+import os
 
-# 加载 Haar 特征分类器
-face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
+class AdaBoostClassifier:
+    def __init__(self, n_estimators=50):
+        self.n_estimators = n_estimators
+        self.models = []
+        self.alphas = []
 
-# 指定测试数据集路径
-test_folder_path = 'Caltech_WebFaces/test'
+    def fit(self, X, y):
+        n_samples = len(X)
+        weights = np.ones(n_samples) / n_samples
 
-# 初始化真实与预测列表
-true_list = []
-pred_list = []
+        for _ in range(self.n_estimators):
+            model = DecisionTreeClassifier(max_depth=1)
+            model.fit(X, y, sample_weight=weights)
+            y_pred = model.predict(X)
 
-# 遍历测试文件夹中的所有图像文件
-for filename in os.listdir(test_folder_path):
-    if filename.endswith(".jpg"):
-        # 加载图像
-        image = cv2.imread(os.path.join(test_folder_path, filename))
+            error = np.sum(weights * (y_pred != y))
+            alpha = 0.5 * np.log((1 - error) / max(error, 1e-10))
 
-        # 将图像转换为灰度图像
+            weights *= np.exp(-alpha * y * y_pred)
+            weights /= np.sum(weights)
+
+            self.models.append(model)
+            self.alphas.append(alpha)
+
+    def predict(self, X):
+        preds = np.zeros(len(X))
+        for alpha, model in zip(self.alphas, self.models):
+            preds += alpha * model.predict(X)
+        return np.sign(preds)
+
+def extract_features(images):
+    features = []
+    for image in images:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        resized_gray = cv2.resize(gray, (50, 50))  # Resize image to reduce feature dimension
+        features.append(resized_gray.flatten())
+    return np.array(features)
 
-        # 使用 Haar 特征分类器检测人脸
-        faces = face_cascade.detectMultiScale(gray, 1.2, 5, minSize=(30, 30))
+# 读取图片和相应的人脸位置信息
+def load_data(image_folder):
+    images = []
+    labels = []
+    for filename in os.listdir(image_folder):
+        if filename.endswith(".jpg"):
+            label = filename.split('_')[0]  # 提取标签，positive 或 negative
+            image = cv2.imread(os.path.join(image_folder, filename))
+            images.append(image)
+            labels.append(1 if label == 'positive' else -1)  # 将 positive 标签设为 1，negative 标签设为 -1
+    return images, np.array(labels)  # 将标签转换为numpy数组
 
-        # 如果检测到人脸，则为真阳性
-        if "positive" in filename:
-            true_list.append(1)
-        else:
-            true_list.append(0)
+# 加载训练集和测试集数据
+train_images, train_labels = load_data(image_folder='Caltech_WebFaces/train')
+test_images, test_labels = load_data(image_folder='Caltech_WebFaces/test')
 
-        if len(faces) == 0:
-            pred_list.append(0)
-        else:
-            pred_list.append(1)
+# 提取训练集和测试集特征
+X_train = extract_features(train_images)
+X_test = extract_features(test_images)
 
-# 计算 ROC 曲线
-fpr, tpr, _ = roc_curve(true_list, pred_list)
+# Initialize and train AdaBoost classifier
+adaboost = AdaBoostClassifier(n_estimators=50)
+adaboost.fit(X_train, train_labels)
 
-# 计算曲线下面积（AUC）
+# Predict on test set
+y_score = adaboost.predict(X_test)
+
+# Calculate ROC curve and AUC
+fpr, tpr, _ = roc_curve(test_labels, y_score)
 roc_auc = auc(fpr, tpr)
 
-# 绘制 ROC 曲线
+# Plot ROC curve
 plt.figure()
-lw = 2
-plt.plot(fpr, tpr, color='darkorange', lw=lw, label='ROC curve (area = %0.2f)' % roc_auc)
-plt.plot([0, 1], [0, 1], color='navy', lw=lw, linestyle='--')
+plt.plot(fpr, tpr, color='darkorange', lw=2, label='ROC curve (area = %0.2f)' % roc_auc)
+plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
 plt.xlim([0.0, 1.0])
 plt.ylim([0.0, 1.05])
 plt.xlabel('False Positive Rate')
 plt.ylabel('True Positive Rate')
-plt.title('Receiver Operating Characteristic (ROC)')
+plt.title('Receiver Operating Characteristic')
 plt.legend(loc="lower right")
 plt.show()
